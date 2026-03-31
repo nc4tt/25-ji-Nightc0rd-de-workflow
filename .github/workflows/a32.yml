@@ -1,0 +1,349 @@
+name: Build Android Kernel 4.14 - Samsung A32 4G (MT6768)
+
+on:
+  workflow_dispatch:
+    inputs:
+      KERNEL_SOURCE:
+        description: "Kernel source repository URL"
+        required: true
+        default: "https://github.com/nc4tt/25-ji-Nightc0rd-de"
+      KERNEL_BRANCH:
+        description: "Kernel source branch"
+        required: true
+        default: "common"
+      ANYKERNEL_SOURCE:
+        description: "AnyKernel3 repository URL"
+        required: false
+        default: "https://github.com/nc4tt/AnyKernel3"
+      ANYKERNEL_BRANCH:
+        description: "AnyKernel3 branch"
+        required: false
+        default: "master"
+      DEFCONFIG:
+        description: "Defconfig file name"
+        required: true
+        default: "a32_c0rd_defconfig"
+      ENABLE_KSU:
+        description: "Enable KernelSU support"
+        required: false
+        type: boolean
+        default: false
+      USE_CLANG:
+        description: "Use Clang instead of GCC"
+        required: false
+        type: boolean
+        default: true
+
+env:
+  ARCH: arm64
+  SUBARCH: arm64
+  PLATFORM_VERSION: 11
+  ANDROID_MAJOR_VERSION: r
+  KERNEL_VERSION: "4.14"
+
+jobs:
+  build:
+    name: "25-ji-Nightc0rd-de | device: a32"
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: 🧹 Free up disk space (remove unused tools)
+        run: |
+          echo "=== Disk usage BEFORE cleanup ==="
+          df -h
+
+          echo "--- Removing Android SDK / NDK ---"
+          sudo rm -rf /usr/local/lib/android
+
+          echo "--- Removing .NET runtime ---"
+          sudo rm -rf /usr/share/dotnet
+
+          echo "--- Removing Haskell GHCup ---"
+          sudo rm -rf /usr/local/.ghcup
+
+          echo "--- Removing CodeQL ---"
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+
+          echo "--- Removing Swift ---"
+          sudo rm -rf /usr/share/swift
+
+          echo "--- Removing Go toolchain ---"
+          sudo rm -rf /usr/local/go
+
+          echo "--- Removing PowerShell ---"
+          sudo rm -rf /usr/local/share/powershell
+
+          echo "--- Removing Google Cloud SDK ---"
+          sudo rm -rf /usr/lib/google-cloud-sdk
+
+          echo "--- Removing Azure CLI ---"
+          sudo rm -rf /opt/az
+
+          echo "--- Removing Docker images ---"
+          sudo docker system prune -af --volumes 2>/dev/null || true
+
+          echo "--- Removing snap packages ---"
+          sudo snap remove --purge lxd 2>/dev/null || true
+          sudo snap remove --purge core20 2>/dev/null || true
+          sudo snap remove --purge snapd 2>/dev/null || true
+          sudo apt-get purge -y snapd 2>/dev/null || true
+
+          echo "--- Cleaning APT cache ---"
+          sudo apt-get autoremove -y
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
+
+          echo "--- Removing large optional packages ---"
+          sudo apt-get purge -y \
+            ghc \
+            libghc-* \
+            mono-complete \
+            firefox \
+            google-chrome-stable \
+            chromium-browser \
+            thunderbird \
+            "libreoffice*" \
+            "mysql-server*" \
+            "postgresql*" \
+            2>/dev/null || true
+
+          echo "--- Removing tmp / runner cache ---"
+          sudo rm -rf /tmp/*
+          sudo rm -rf ~/.cache
+
+          echo "=== Disk usage AFTER cleanup ==="
+          df -h
+
+      - name: 🗜️ Enable swap space (extra memory buffer)
+        run: |
+          sudo fallocate -l 8G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          free -h
+  
+      - name: 📦 Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            bc \
+            bison \
+            build-essential \
+            ccache \
+            curl \
+            flex \
+            git \
+            git-lfs \
+            gnupg \
+            gzip \
+            libelf-dev \
+            libncurses5-dev \
+            libssl-dev \
+            lz4 \
+            lzop \
+            make \
+            python3 \
+            python3-pip \
+            tar \
+            unzip \
+            wget \
+            xz-utils \
+            zip \
+            zlib1g-dev
+          echo "Dependencies installed successfully."
+
+      - name: ⚡ Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          max-size: "3G"
+          key: kernel-a32-mt6768-${{ github.run_id }}
+          restore-keys: |
+            kernel-a32-mt6768-
+
+      - name: 🔧 Setup Clang + GCC toolchain
+        if: ${{ github.event.inputs.USE_CLANG == 'true' }}
+        run: |
+          mkdir -p $HOME/toolchains/clang
+          wget -q --show-progress \
+            "https://github.com/ZyCromerZ/Clang/releases/download/19.0.0git-20240807-release/Clang-19.0.0git-20240807.tar.gz" \
+            -O clang.tar.gz
+          tar -C $HOME/toolchains/clang --strip-components=1 -xzf clang.tar.gz
+          rm -f clang.tar.gz
+
+          mkdir -p $HOME/toolchains/gcc64 $HOME/toolchains/gcc32
+
+          wget -q "https://github.com/mvaisakh/gcc-arm64/archive/refs/heads/gcc-master.tar.gz" \
+            -O gcc64.tar.gz
+          tar -C $HOME/toolchains/gcc64 --strip-components=1 -xzf gcc64.tar.gz
+          rm -f gcc64.tar.gz
+
+          wget -q "https://github.com/mvaisakh/gcc-arm/archive/refs/heads/gcc-master.tar.gz" \
+            -O gcc32.tar.gz
+          tar -C $HOME/toolchains/gcc32 --strip-components=1 -xzf gcc32.tar.gz
+          rm -f gcc32.tar.gz
+
+          echo "CLANG_PATH=$HOME/toolchains/clang/bin" >> $GITHUB_ENV
+          echo "GCC64_PATH=$HOME/toolchains/gcc64/bin" >> $GITHUB_ENV
+          echo "GCC32_PATH=$HOME/toolchains/gcc32/bin" >> $GITHUB_ENV
+          echo "$HOME/toolchains/clang/bin" >> $GITHUB_PATH
+
+      - name: 🔧 Setup GCC-only toolchain (arm64 + arm)
+        if: ${{ github.event.inputs.USE_CLANG != 'true' }}
+        run: |
+          mkdir -p $HOME/toolchains/gcc64 $HOME/toolchains/gcc32
+
+          wget -q "https://github.com/mvaisakh/gcc-arm64/archive/refs/heads/gcc-master.tar.gz" \
+            -O gcc64.tar.gz
+          tar -C $HOME/toolchains/gcc64 --strip-components=1 -xzf gcc64.tar.gz
+          rm -f gcc64.tar.gz
+
+          wget -q "https://github.com/mvaisakh/gcc-arm/archive/refs/heads/gcc-master.tar.gz" \
+            -O gcc32.tar.gz
+          tar -C $HOME/toolchains/gcc32 --strip-components=1 -xzf gcc32.tar.gz
+          rm -f gcc32.tar.gz
+
+          echo "GCC64_PATH=$HOME/toolchains/gcc64/bin" >> $GITHUB_ENV
+          echo "GCC32_PATH=$HOME/toolchains/gcc32/bin" >> $GITHUB_ENV
+          echo "$HOME/toolchains/gcc64/bin:$HOME/toolchains/gcc32/bin" >> $GITHUB_PATH
+
+      # ──────────────────────────────────────────────
+      # 5. CLONE KERNEL SOURCE
+      # ──────────────────────────────────────────────
+      - name: 📥 Clone kernel source
+        run: |
+          git clone --depth=1 \
+            --branch "${{ github.event.inputs.KERNEL_BRANCH }}" \
+            "${{ github.event.inputs.KERNEL_SOURCE }}" \
+            kernel-source
+          echo "KERNEL_DIR=$GITHUB_WORKSPACE/kernel-source" >> $GITHUB_ENV
+
+      # ──────────────────────────────────────────────
+      # 6. OPTIONAL: APPLY KERNELSU PATCH
+      # ──────────────────────────────────────────────
+      - name: 🛡️ Integrate KernelSU
+        if: ${{ github.event.inputs.ENABLE_KSU == 'true' }}
+        working-directory: kernel-source
+        run: |
+          echo "Applying KernelSU..."
+          curl -LSs "https://raw.githubusercontent.com/backslashxx/KernelSU/master/kernel/setup.sh" | bash -s master
+          echo "KernelSU applied."
+    
+      - name: 🏗️ Generate defconfig
+        working-directory: kernel-source
+        run: |
+          if [ "${{ github.event.inputs.USE_CLANG }}" == "true" ]; then
+            MAKE_FLAGS=(
+              ARCH=${{ env.ARCH }}
+              SUBARCH=${{ env.SUBARCH }}
+              CC=clang
+              CLANG_TRIPLE=aarch64-linux-gnu-
+              CROSS_COMPILE=$HOME/toolchains/gcc64/bin/aarch64-linux-android-
+              CROSS_COMPILE_ARM32=$HOME/toolchains/gcc32/bin/arm-linux-androideabi-
+              LD=ld.lld
+              AR=llvm-ar
+              NM=llvm-nm
+              OBJCOPY=llvm-objcopy
+              OBJDUMP=llvm-objdump
+              STRIP=llvm-strip
+            )
+          else
+            MAKE_FLAGS=(
+              ARCH=${{ env.ARCH }}
+              SUBARCH=${{ env.SUBARCH }}
+              CROSS_COMPILE=$HOME/toolchains/gcc64/bin/aarch64-linux-android-
+              CROSS_COMPILE_ARM32=$HOME/toolchains/gcc32/bin/arm-linux-androideabi-
+            )
+          fi
+
+          # Persist flags for the compile step
+          printf '%s\n' "${MAKE_FLAGS[@]}" > /tmp/make_flags.txt
+
+          make -j$(nproc --all) "${MAKE_FLAGS[@]}" \
+            O=out \
+            ${{ github.event.inputs.DEFCONFIG }}
+
+      - name: 🔨 Compile kernel
+        working-directory: kernel-source
+        run: |
+          export PATH="/usr/lib/ccache:$PATH"
+
+          mapfile -t MAKE_FLAGS < /tmp/make_flags.txt
+
+          make -j$(nproc --all) "${MAKE_FLAGS[@]}" \
+            O=out \
+            PLATFORM_VERSION=${{ env.PLATFORM_VERSION }} \
+            ANDROID_MAJOR_VERSION=${{ env.ANDROID_MAJOR_VERSION }} \
+            2>&1 | tee build.log
+
+          echo "BUILD_LOG=$GITHUB_WORKSPACE/kernel-source/build.log" >> $GITHUB_ENV
+
+      - name: ✅ Verify kernel image output
+        working-directory: kernel-source
+        run: |
+          if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
+            IMG="Image.gz-dtb"
+          elif [ -f out/arch/arm64/boot/Image.gz ]; then
+            IMG="Image.gz"
+          elif [ -f out/arch/arm64/boot/Image ]; then
+            IMG="Image"
+          else
+            echo "❌ Kernel image not found! Dumping last 100 lines of build log..."
+            tail -100 build.log
+            exit 1
+          fi
+
+          echo "KERNEL_IMAGE=$IMG" >> $GITHUB_ENV
+          echo "KERNEL_IMAGE_PATH=$GITHUB_WORKSPACE/kernel-source/out/arch/arm64/boot/$IMG" >> $GITHUB_ENV
+          echo "✅ Kernel image found: $IMG"
+
+      - name: 📥 Clone AnyKernel3
+        run: |
+          git clone --depth=1 \
+            --branch "${{ github.event.inputs.ANYKERNEL_BRANCH }}" \
+            "${{ github.event.inputs.ANYKERNEL_SOURCE }}" \
+            AnyKernel3
+          rm -rf AnyKernel3/.git AnyKernel3/ramdisk AnyKernel3/patch
+
+      - name: 📦 Package flashable kernel zip
+        run: |
+          TIMESTAMP=$(date +"%Y%m%d-%H%M")
+          KSU_TAG=""
+          [ "${{ github.event.inputs.ENABLE_KSU }}" == "true" ] && KSU_TAG="-KSU"
+          ZIP_NAME="Kernel-A32-MT6768-4.14${KSU_TAG}-${TIMESTAMP}.zip"
+
+          # Copy kernel image
+          cp "${{ env.KERNEL_IMAGE_PATH }}" AnyKernel3/
+
+          # Copy DTB/DTBO if present
+          DTB=$(find kernel-source/out/arch/arm64/boot/dts -name "*.dtb" 2>/dev/null | head -1)
+          [ -n "$DTB" ] && cp "$DTB" AnyKernel3/dtb || echo "No DTB found, skipping."
+          DTBO="kernel-source/out/arch/arm64/boot/dtbo.img"
+          [ -f "$DTBO" ] && cp "$DTBO" AnyKernel3/ || echo "No DTBO found, skipping."
+
+          cd AnyKernel3
+          zip -r9 "../$ZIP_NAME" . -x "*.git*" "*.github*"
+          cd ..
+
+          echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
+          echo "ZIP_PATH=$GITHUB_WORKSPACE/$ZIP_NAME" >> $GITHUB_ENV
+          ls -lh "$ZIP_NAME"
+          echo "✅ Flashable zip created: $ZIP_NAME"
+
+      - name: ⬆️ Upload kernel zip artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ZIP_NAME }}
+          path: ${{ env.ZIP_PATH }}
+          retention-days: 7
+
+      - name: ⬆️ Upload build log artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ github.run_id }}
+          path: ${{ env.BUILD_LOG }}
+          retention-days: 3
+
+      - name: 🖨️ Final disk usage report
+        if: always()
+        run: df -h
