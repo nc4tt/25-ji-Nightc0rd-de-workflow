@@ -1,4 +1,4 @@
-name: Build Android Kernel 4.14 - Samsung A32 4G (MT6768)
+name: "25-ji-Nightc0rd-de | device: a32"
 
 on:
   workflow_dispatch:
@@ -43,7 +43,7 @@ env:
 
 jobs:
   build:
-    name: "25-ji-Nightc0rd-de | device: a32"
+    name: "kanade is cooking noodles..."
     runs-on: ubuntu-22.04
 
     steps:
